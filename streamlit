@@ -1,0 +1,465 @@
+import streamlit as st
+from pymongo import MongoClient
+import pandas as pd
+import matplotlib.pyplot as plt
+
+# =========================================
+# PAGE CONFIG
+# =========================================
+st.set_page_config(
+    page_title="Customer Analytics Dashboard",
+    page_icon="📊",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# =========================================
+# CUSTOM STYLE
+# =========================================
+st.markdown("""
+<style>
+    :root {
+        --bg: #0B1020;
+        --card: #111827;
+        --card-2: #151F32;
+        --border: rgba(255, 255, 255, 0.08);
+        --text: #E5E7EB;
+        --muted: #9CA3AF;
+        --accent: #38BDF8;
+        --accent-2: #22C55E;
+        --danger: #FB7185;
+    }
+
+    .stApp {
+        background:
+            radial-gradient(circle at top left, rgba(56, 189, 248, 0.12), transparent 30%),
+            radial-gradient(circle at top right, rgba(34, 197, 94, 0.10), transparent 28%),
+            var(--bg);
+        color: var(--text);
+    }
+
+    [data-testid="stSidebar"] {
+        background: #0F172A;
+        border-right: 1px solid var(--border);
+    }
+
+    h1, h2, h3 {
+        letter-spacing: -0.03em;
+    }
+
+    h1 {
+        font-size: 2.25rem !important;
+        color: #F8FAFC;
+        margin-bottom: 0.25rem;
+    }
+
+    h2 {
+        color: #F8FAFC;
+        font-size: 1.35rem !important;
+        margin-top: 0.75rem;
+    }
+
+    .subtitle {
+        color: var(--muted);
+        font-size: 1rem;
+        margin-bottom: 1.25rem;
+    }
+
+    .metric-card {
+        background: linear-gradient(180deg, rgba(255,255,255,0.045), rgba(255,255,255,0.02));
+        border: 1px solid var(--border);
+        border-radius: 18px;
+        padding: 18px 18px 16px 18px;
+        box-shadow: 0 12px 35px rgba(0, 0, 0, 0.18);
+        min-height: 118px;
+    }
+
+    .metric-label {
+        color: var(--muted);
+        font-size: 0.84rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        margin-bottom: 8px;
+    }
+
+    .metric-value {
+        color: #F8FAFC;
+        font-size: 1.75rem;
+        font-weight: 800;
+        line-height: 1.1;
+    }
+
+    .metric-note {
+        color: var(--muted);
+        font-size: 0.82rem;
+        margin-top: 7px;
+    }
+
+    .section-card {
+        background: rgba(17, 24, 39, 0.78);
+        border: 1px solid var(--border);
+        border-radius: 18px;
+        padding: 16px 18px;
+        margin-bottom: 16px;
+        box-shadow: 0 12px 35px rgba(0, 0, 0, 0.14);
+    }
+
+    div[data-testid="stDataFrame"] {
+        border-radius: 14px;
+        overflow: hidden;
+        border: 1px solid var(--border);
+    }
+
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+    }
+
+    .stTabs [data-baseweb="tab"] {
+        background: rgba(255,255,255,0.04);
+        border-radius: 999px;
+        padding: 8px 16px;
+        border: 1px solid var(--border);
+    }
+
+    .stTabs [aria-selected="true"] {
+        background: rgba(56, 189, 248, 0.16) !important;
+        color: #E0F2FE !important;
+    }
+
+    .block-container {
+        padding-top: 2rem;
+        padding-bottom: 2rem;
+    }
+
+    #MainMenu, footer, header {
+        visibility: hidden;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# =========================================
+# HELPER FUNCTIONS
+# =========================================
+def format_number(value):
+    if pd.isna(value):
+        return "N/A"
+    if isinstance(value, float):
+        return f"{value:,.2f}"
+    return f"{value:,}"
+
+
+def metric_card(label, value, note=""):
+    st.markdown(
+        f"""
+        <div class="metric-card">
+            <div class="metric-label">{label}</div>
+            <div class="metric-value">{value}</div>
+            <div class="metric-note">{note}</div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+
+def render_chart(fig):
+    """Render charts smaller than full-width and close the figure safely."""
+    try:
+        st.pyplot(fig, clear_figure=True, use_container_width=False)
+    except TypeError:
+        st.pyplot(fig, clear_figure=True)
+    plt.close(fig)
+
+
+def style_axis(ax, title, xlabel=None, ylabel=None):
+    ax.set_title(title, fontsize=10, fontweight="bold", pad=10)
+    if xlabel:
+        ax.set_xlabel(xlabel, fontsize=8)
+    if ylabel:
+        ax.set_ylabel(ylabel, fontsize=8)
+    ax.tick_params(axis="both", labelsize=7)
+    ax.grid(True, alpha=0.18, linewidth=0.7)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+
+# =========================================
+# HEADER
+# =========================================
+st.title("📊 Customer Analytics Dashboard")
+st.markdown(
+    "<div class='subtitle'>Professional customer insights powered by MongoDB, analytics, and machine learning outputs.</div>",
+    unsafe_allow_html=True
+)
+
+# =========================================
+# MONGODB CONNECTION + LOAD DATA
+# =========================================
+try:
+    client = MongoClient("mongodb://localhost:27017/", serverSelectionTimeoutMS=3000)
+    db = client["myProjectDB"]
+    collection = db["customers"]
+    data = list(collection.find())
+except Exception as error:
+    st.error(f"Could not connect to MongoDB: {error}")
+    st.stop()
+
+df = pd.DataFrame(data)
+
+if df.empty:
+    st.warning("No customer data found in MongoDB collection.")
+    st.stop()
+
+if "_id" in df.columns:
+    df = df.drop("_id", axis=1)
+
+# =========================================
+# SIDEBAR FILTERS
+# =========================================
+st.sidebar.markdown("## ⚙️ Filters")
+st.sidebar.caption("Use these filters to focus the dashboard on a smaller customer segment.")
+
+filtered_df = df.copy()
+
+if "Country" in df.columns:
+    country_options = ["All"] + sorted(df["Country"].dropna().astype(str).unique().tolist())
+    selected_country = st.sidebar.selectbox("Country", country_options)
+
+    if selected_country != "All":
+        filtered_df = filtered_df[filtered_df["Country"].astype(str) == selected_country]
+else:
+    st.sidebar.info("Country column was not found, so the country filter is hidden.")
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 📌 Dashboard Sections")
+st.sidebar.markdown("KPIs  •  Overview  •  Behavior  •  Correlation  •  Search")
+
+# =========================================
+# KPIs
+# =========================================
+st.markdown("## 📌 Key Metrics")
+
+kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+
+with kpi1:
+    metric_card("Total Customers", format_number(filtered_df.shape[0]), "After selected filters")
+
+with kpi2:
+    countries_count = filtered_df["Country"].nunique() if "Country" in filtered_df.columns else "N/A"
+    metric_card("Countries", format_number(countries_count), "Unique markets")
+
+with kpi3:
+    if "monthly_spending" in filtered_df.columns and not filtered_df.empty:
+        avg_spending = filtered_df["monthly_spending"].mean()
+        metric_card("Avg Spending", format_number(avg_spending), "Monthly average")
+    else:
+        metric_card("Avg Spending", "N/A", "Column not available")
+
+with kpi4:
+    if "churn" in filtered_df.columns and not filtered_df.empty:
+        churn_rate = filtered_df["churn"].mean() * 100
+        metric_card("Churn Rate", f"{churn_rate:.2f}%", "Average churn indicator")
+    else:
+        metric_card("Churn Rate", "N/A", "Column not available")
+
+# =========================================
+# TABS
+# =========================================
+tab_overview, tab_behavior, tab_corr, tab_data = st.tabs([
+    "🌍 Overview",
+    "📈 Behavior",
+    "🧠 Correlation",
+    "🔍 Data & Search"
+])
+
+# =========================================
+# OVERVIEW TAB
+# =========================================
+with tab_overview:
+    st.markdown("<div class='section-card'>", unsafe_allow_html=True)
+    st.markdown("### Dataset Preview")
+    st.dataframe(filtered_df.head(15), use_container_width=True, height=360)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    col_a, col_b = st.columns(2, gap="large")
+
+    with col_a:
+        st.markdown("<div class='section-card'>", unsafe_allow_html=True)
+        st.markdown("### 🌍 Top Countries")
+        if "Country" in filtered_df.columns and not filtered_df.empty:
+            country_counts = filtered_df["Country"].value_counts().head(10)
+            fig1, ax1 = plt.subplots(figsize=(5.1, 3.0), dpi=140)
+            country_counts.plot(kind="bar", ax=ax1, color="#38BDF8", width=0.72)
+            style_axis(ax1, "Top 10 Countries", "Country", "Customers")
+            plt.xticks(rotation=35, ha="right")
+            fig1.tight_layout()
+            render_chart(fig1)
+        else:
+            st.info("Country column is not available.")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    with col_b:
+        st.markdown("<div class='section-card'>", unsafe_allow_html=True)
+        st.markdown("### 🔥 Churn Split")
+        if "churn" in filtered_df.columns and not filtered_df.empty:
+            churn_counts = filtered_df["churn"].value_counts().sort_index()
+            labels = ["No Churn" if value == 0 else "Churn" if value == 1 else str(value) for value in churn_counts.index]
+            fig2, ax2 = plt.subplots(figsize=(4.2, 3.0), dpi=140)
+            ax2.pie(
+                churn_counts,
+                labels=labels,
+                autopct="%1.1f%%",
+                startangle=90,
+                textprops={"fontsize": 8},
+                colors=["#22C55E", "#FB7185", "#38BDF8"][:len(churn_counts)]
+            )
+            ax2.set_title("Churn Distribution", fontsize=10, fontweight="bold", pad=10)
+            ax2.axis("equal")
+            fig2.tight_layout()
+            render_chart(fig2)
+        else:
+            st.info("Churn column is not available.")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+# =========================================
+# BEHAVIOR TAB
+# =========================================
+with tab_behavior:
+    row1_col1, row1_col2 = st.columns(2, gap="large")
+
+    with row1_col1:
+        st.markdown("<div class='section-card'>", unsafe_allow_html=True)
+        st.markdown("### 📈 Activity Score")
+        if "activity_score" in filtered_df.columns and not filtered_df.empty:
+            fig3, ax3 = plt.subplots(figsize=(5.1, 3.0), dpi=140)
+            ax3.hist(filtered_df["activity_score"].dropna(), bins=18, color="#38BDF8", edgecolor="#0F172A")
+            style_axis(ax3, "Activity Score Distribution", "Score", "Frequency")
+            fig3.tight_layout()
+            render_chart(fig3)
+        else:
+            st.info("activity_score column is not available.")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    with row1_col2:
+        st.markdown("<div class='section-card'>", unsafe_allow_html=True)
+        st.markdown("### 💰 Monthly Spending")
+        if "monthly_spending" in filtered_df.columns and not filtered_df.empty:
+            fig4, ax4 = plt.subplots(figsize=(5.1, 3.0), dpi=140)
+            ax4.hist(filtered_df["monthly_spending"].dropna(), bins=18, color="#22C55E", edgecolor="#0F172A")
+            style_axis(ax4, "Monthly Spending Distribution", "Amount", "Frequency")
+            fig4.tight_layout()
+            render_chart(fig4)
+        else:
+            st.info("monthly_spending column is not available.")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    row2_col1, row2_col2 = st.columns(2, gap="large")
+
+    with row2_col1:
+        st.markdown("<div class='section-card'>", unsafe_allow_html=True)
+        st.markdown("### 💸 Churn vs Spending")
+        if {"monthly_spending", "churn"}.issubset(filtered_df.columns) and not filtered_df.empty:
+            churn_spending = filtered_df.groupby("churn")["monthly_spending"].mean()
+            fig5, ax5 = plt.subplots(figsize=(5.1, 3.0), dpi=140)
+            churn_spending.plot(kind="bar", ax=ax5, color="#FB7185", width=0.55)
+            style_axis(ax5, "Average Spending by Churn", "Churn", "Average Spending")
+            plt.xticks(rotation=0)
+            fig5.tight_layout()
+            render_chart(fig5)
+        else:
+            st.info("monthly_spending and churn columns are required.")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    with row2_col2:
+        st.markdown("<div class='section-card'>", unsafe_allow_html=True)
+        st.markdown("### 🔗 Activity vs Spending")
+        if {"activity_score", "monthly_spending"}.issubset(filtered_df.columns) and not filtered_df.empty:
+            fig6, ax6 = plt.subplots(figsize=(5.1, 3.0), dpi=140)
+            ax6.scatter(
+                filtered_df["activity_score"],
+                filtered_df["monthly_spending"],
+                alpha=0.55,
+                s=18,
+                color="#38BDF8"
+            )
+            style_axis(ax6, "Customer Behavior Relationship", "Activity Score", "Monthly Spending")
+            fig6.tight_layout()
+            render_chart(fig6)
+        else:
+            st.info("activity_score and monthly_spending columns are required.")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown("<div class='section-card'>", unsafe_allow_html=True)
+    st.markdown("### 📞 Login Frequency vs Support Tickets")
+    if {"login_frequency", "support_tickets"}.issubset(filtered_df.columns) and not filtered_df.empty:
+        fig7, ax7 = plt.subplots(figsize=(5.4, 3.1), dpi=140)
+        ax7.scatter(
+            filtered_df["login_frequency"],
+            filtered_df["support_tickets"],
+            alpha=0.55,
+            s=18,
+            color="#A78BFA"
+        )
+        style_axis(ax7, "User Support Analysis", "Login Frequency", "Support Tickets")
+        fig7.tight_layout()
+        render_chart(fig7)
+    else:
+        st.info("login_frequency and support_tickets columns are required.")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+# =========================================
+# CORRELATION TAB
+# =========================================
+with tab_corr:
+    st.markdown("<div class='section-card'>", unsafe_allow_html=True)
+    st.markdown("### 🧠 Correlation Matrix")
+
+    numeric_df = filtered_df.select_dtypes(include=["int64", "float64"])
+
+    if numeric_df.shape[1] >= 2 and not numeric_df.empty:
+        corr = numeric_df.corr()
+        fig8, ax8 = plt.subplots(figsize=(5.4, 3.5), dpi=140)
+        cax = ax8.matshow(corr, cmap="Blues")
+        ax8.set_xticks(range(len(corr.columns)))
+        ax8.set_yticks(range(len(corr.columns)))
+        ax8.set_xticklabels(corr.columns, rotation=45, ha="left", fontsize=7)
+        ax8.set_yticklabels(corr.columns, fontsize=7)
+        ax8.set_title("Numeric Feature Correlation", fontsize=10, fontweight="bold", pad=14)
+        fig8.colorbar(cax, fraction=0.045, pad=0.04)
+        fig8.tight_layout()
+        render_chart(fig8)
+    else:
+        st.info("At least two numeric columns are required to show a correlation matrix.")
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+# =========================================
+# DATA + SEARCH TAB
+# =========================================
+with tab_data:
+    st.markdown("<div class='section-card'>", unsafe_allow_html=True)
+    st.markdown("### 🔍 Search Customer")
+
+    search_id = st.text_input("Enter Customer ID")
+
+    if search_id:
+        if "Customer Id" in filtered_df.columns:
+            result = filtered_df[
+                filtered_df["Customer Id"].astype(str).str.contains(search_id, case=False, na=False)
+            ]
+            st.dataframe(result, use_container_width=True, height=320)
+        else:
+            st.warning("Customer Id column was not found.")
+    else:
+        st.caption("Type a customer ID to search inside the filtered data.")
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    with st.expander("Show full filtered dataset"):
+        st.dataframe(filtered_df, use_container_width=True, height=520)
+
+# =========================================
+# FOOTER
+# =========================================
+st.markdown("---")
+st.caption("✅ Developed using PySpark, MongoDB, Machine Learning, and Streamlit")
